@@ -1,0 +1,21 @@
+- insert:
+  - id: group-whisper
+    name: 'group-whisper'
+    # config:
+    #   enabled: true
+    #   groups: ["GROUP_ID"]
+    #   waitingTime: 6
+    #   secretaryDebounceTime: 6
+    #   observationTimeout: 90
+    #   analyzerModel: deepseek-flash
+    #   energy:
+    #     initialEnergy: 100
+    #     maxEnergy: 100
+    #     minEnergy: -100
+    #     recoveryPerSecond: 0.8
+    #     baseReplyCost: 9
+    #     replyCostPerCharacter: 0.12
+    #   leaveReply:
+    #     echoDetectionThreshold: 3
+    #     denseConversationThreshold: 1
+    #     familiarityCooldownDuration: 1800
