@@ -67,3 +67,31 @@ PRIMARY KEY (day, group_id, user_id)
 - README 含：一句话定位、配置表、命令表、验收脚本用法
 - 示例配置里 QQ 号、群号、token 全部占位符
 - 附一个 `tools/verify.sh`，用假数据跑通判定与跨日重置
+
+## 探明结论
+
+选择 **B 模型中间件**。
+
+依据：`@deepseek-ai/dsh-llm` 的 `lib/types/index.d.ts:32-45` 公开声明了
+`llm/stream` waterfall，说明它包住每一次流式模型调用，可用 `next()` 放行或
+直接产出分片；`lib/types/index.js:949-956` 的实际分发确实经过
+`ctx.waterfall(this, 'llm/stream', options, ...)`。请求在
+`lib/types/types.d.ts:506-547` 中带有 `messages` 与 `sessionId`，响应流在
+`lib/types/types.d.ts:426-464` 中先发出 `usage` chunk、再发出终止 `finish`；
+`TokenUsage` 在 `lib/types/types.d.ts:152-173` 明确给出互不重叠的
+`inputTokens`、`outputTokens`、`cacheReadTokens`、`cacheWriteTokens`。因此
+B 既能在调用 adapter 前拦截，又能从真实回包取得 prompt、completion 与 cache
+计数。
+
+A 不可行：`dsh-onebot-qq@0.9.6` 的 `lib/inbound.js:196-208` 会调用
+`ctx.interceptBusyTurn`，但该 `ctx` 不是插件上下文；`lib/bridge.js:126-144`
+显示它是 `ChatBridge` 构造时写死的内部回调，`lib/bridge.js:598-631` 也只是
+类上的私有流程。插件入口 `lib/index.js:327-420` 局部构造 `ChatBridge` 后只启动
+生命周期，没有把 bridge 或 middleware 注册成 host service/event，故其他插件
+没有可注册的入站 seam。其命令表同样是包内固定的
+`lib/commands.js:13-37` 与 `lib/commands.js:118-145`，不能作为公开扩展面。
+
+C 只作兜底：自建 OneBot 反代可以拦截消息，但 NapCat 的 OneBot 事件与回执不含
+模型 token usage；要得到 prompt/completion/cache 就只能再做估算或旁路，达不到
+本规格“真实 usage 对得上”的硬验收。它还会把已稳定的通道连接拆成自维护代理，
+因此不作为本轮主方案。
