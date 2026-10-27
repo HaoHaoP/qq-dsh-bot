@@ -18,8 +18,32 @@ import.meta.resolve('dsh-meme/package.json')
 | 用户图库（只读） | `$DSH_HOME/meme-packs/`，缺省 `~/.dsh/meme-packs/` |
 | 本插件索引（读写） | `$DSH_HOME/qq-meme-pick/index.db`，缺省 `~/.dsh/qq-meme-pick/index.db` |
 
-任一图库目录不存在时直接跳过，不报错。扫描递归接受
-`.jpg/.jpeg/.png/.gif/.webp`，只读取图库里的文件，不写入、移动或删除图库。
+两个图库路径都是“包根目录”，不是直接放图片的目录。根目录下每个一级子目录
+视为一个图库包。例如内置包的实际结构是：
+
+```text
+<dsh-meme 包根>/memes/
+  dafeiyu-001/
+    manifest.json
+    index.db
+    memes/
+      morning/zaoshanghao.jpg
+      sad/qiurao.jpg
+```
+
+扫描时先发现 `dafeiyu-001` 这个包，再优先进入包内的 `memes/` 收集图片。兼容
+没有这一层的旧包：
+
+```text
+legacy-pack/
+  angry/shengqi.jpg       # 直接是 <情绪>/<文件>
+flat-pack/
+  hello.webp              # 平铺图片
+```
+
+包内图片递归接受 `.png/.jpg/.jpeg/.gif/.webp`；`manifest.json`、`index.db`
+等其它文件跳过。任一图库目录或空包不存在可用图片时直接跳过，不报错。扫描
+只读取图库里的文件，不写入、移动或删除图库。
 
 ## 索引
 
@@ -29,22 +53,28 @@ import.meta.resolve('dsh-meme/package.json')
 | 字段 | 说明 |
 | --- | --- |
 | `path` | 图片绝对路径，主键，保证唯一 |
+| `pack` | 一级包目录名，例如 `dafeiyu-001` |
 | `source` | `builtin` 或 `user` |
+| `emotion` | 包内容根下的情绪目录名；平铺图片为空字符串 |
 | `name` | 由文件名生成的展示名 |
 | `keywords` | 目录、文件名、情绪规则命中的可搜索词 |
+| `mtime` | 文件修改时间（毫秒） |
 | `indexed_at` | 本次写入的毫秒时间戳 |
 
-另外保存 `mtime_ms`、`size_bytes`、内容 `hash` 和推断出的 `moods`。首次运行
-全量扫描。后续调用会发现新文件，并用 `mtime_ms + size_bytes` 判断是否更新；
-未变化文件不重算 hash。`rescan: true` 忽略增量判断，完整重算所有当前文件。
-已从目录删除的文件会从插件索引中移除。相同内容 hash 只保留一条候选，避免
-同一张图因为位于两个目录而被重复发送。
+另外保存 `mtime_ms`、`size_bytes`、内容 `hash` 和推断出的 `moods`。首次调用
+`qq_meme` 且索引为空时自动全量扫描一次；后续调用直接复用索引。
+`rescan: true` 强制重扫全部当前文件，并重新计算内容 hash。已从目录删除的
+文件会从插件索引中移除。相同内容 hash 只保留一条候选，避免同一张图因为
+位于两个目录而被重复发送。旧版索引会自动补齐 `pack`、`emotion`、`mtime`
+字段并重建一次。
 
 ## 情绪与关键词推断
 
-每条图片的推断输入是相对所属图库根目录的路径和去掉扩展名后的文件名。路径
-按非字母、非数字字符切词并转小写。例如
-`pack-a/happy/hug_friend.png` 会产生 `happy`、`hug`、`friend` 等关键词。
+每条图片的推断输入包含包名、包内相对路径和去掉扩展名后的文件名。路径按
+非字母、非数字字符切词并转小写。例如
+`dafeiyu-001/memes/morning/zaoshanghao.jpg` 会产生 `dafeiyu`、`001`、
+`morning`、`zaoshanghao` 等关键词。情绪目录取包内容根下的第一级目录名，
+因此上例的 `emotion` 是 `morning`，平铺包的 `emotion` 是空字符串。
 
 情绪按以下规则从路径与文件名推断：
 
@@ -106,7 +136,7 @@ qq_meme({
 没有可用图片时以非零状态退出：
 
 ```bash
-node --input-type=module -e "import { pickMeme } from './plugins/qq-meme-pick/lib/index.js'; const r = pickMeme({ mood: 'happy', rescan: true }); console.log(r.files.join('\n')); if (r.files.length === 0) { console.error(r.caption); process.exitCode = 1 }"
+node --input-type=module -e "import { pickMeme } from './plugins/qq-meme-pick/lib/index.js'; const r = pickMeme({ rescan: true }); if (r.files.length === 0) { console.error(r.caption); process.exit(1) } for (const file of r.files) console.log('挑到: ' + file)"
 ```
 
 完整验收：

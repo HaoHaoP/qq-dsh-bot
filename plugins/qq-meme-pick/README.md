@@ -7,22 +7,25 @@ does not send anything; pass the returned `files` to `qq_send_image`.
 qq_meme({ mood: "happy", keyword: "hug", count: 1, rescan: false })
 ```
 
-The plugin scans two filesystem roots on each call:
+The plugin treats two filesystem roots as containers of meme packages:
 
-- Built-in images: `<dsh-meme package root>/memes/`, located with
+- Built-in packages: `<dsh-meme package root>/memes/`, located with
   `import.meta.resolve('dsh-meme/package.json')`.
-- User images: `$DSH_HOME/meme-packs/`, or `~/.dsh/meme-packs/` when
+- User packages: `$DSH_HOME/meme-packs/`, or `~/.dsh/meme-packs/` when
   `DSH_HOME` is unset.
 
-A missing root is skipped. The plugin does not read dsh-meme's database and
-does not require dsh-meme's pack index to exist. It only reads images from the
-two directories.
+Each immediate child is a package. Image files are collected recursively from
+`<package>/memes/` when that directory exists, otherwise from the package root.
+This supports `<package>/memes/<emotion>/<file>`, legacy
+`<package>/<emotion>/<file>`, and flat `<package>/<file>` layouts. Missing
+roots and empty packages are skipped. The plugin does not read dsh-meme's
+database or require its pack index to exist.
 
 The plugin writes its own SQLite index to
 `$DSH_HOME/qq-meme-pick/index.db` (default `~/.dsh/qq-meme-pick/index.db`).
-The first call indexes every image. Later calls reuse unchanged rows and
-refresh files whose modification time or size changed. `rescan: true` forces
-a complete refresh before selection.
+The first call with an empty index scans every package image. Later calls reuse
+the index. `rescan: true` forces a complete scan and refreshes changed files
+before selection.
 
 Configuration:
 

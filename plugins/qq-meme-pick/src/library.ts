@@ -8,7 +8,7 @@ import {
   realpathSync,
   statSync,
 } from 'node:fs'
-import { basename, dirname, extname, join, relative, resolve } from 'node:path'
+import { basename, dirname, extname, join, relative, sep } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { fileURLToPath } from 'node:url'
 import type { NormalizedQqMemeConfig } from './config.js'
@@ -25,12 +25,15 @@ export type MemeSource = 'builtin' | 'user'
 export interface MemeRecord {
   identity: string
   file: string
+  pack: string
   source: MemeSource
+  emotion: string
   name: string
   caption: string
   keywords: string
   moods: Mood[]
   hash: string
+  mtime: number
   haystack: string
 }
 
@@ -41,17 +44,22 @@ export interface MemeLibrary {
 
 interface ScannedFile {
   path: string
+  pack: string
   source: MemeSource
-  mtimeMs: number
+  emotion: string
+  relativePath: string
+  mtime: number
   size: number
 }
 
 interface ExistingRow {
   path?: unknown
+  pack?: unknown
   source?: unknown
+  emotion?: unknown
   name?: unknown
   keywords?: unknown
-  mtime_ms?: unknown
+  mtime?: unknown
   size_bytes?: unknown
   hash?: unknown
   moods?: unknown
@@ -59,11 +67,14 @@ interface ExistingRow {
 
 interface IndexedRow {
   path?: unknown
+  pack?: unknown
   source?: unknown
+  emotion?: unknown
   name?: unknown
   keywords?: unknown
   hash?: unknown
   moods?: unknown
+  mtime?: unknown
 }
 
 const MOOD_KEYWORDS: Readonly<Record<Mood, readonly string[]>> = {
@@ -75,19 +86,26 @@ const MOOD_KEYWORDS: Readonly<Record<Mood, readonly string[]>> = {
   daily: ['daily', '日常', '睡觉', '上班', '摸鱼', '干饭'],
 }
 
-const SCHEMA = `
+const TABLE_SCHEMA = `
 CREATE TABLE IF NOT EXISTS memes (
   path TEXT NOT NULL PRIMARY KEY,
+  pack TEXT NOT NULL,
   source TEXT NOT NULL CHECK (source IN ('builtin', 'user')),
+  emotion TEXT NOT NULL,
   name TEXT NOT NULL,
   keywords TEXT NOT NULL,
   indexed_at INTEGER NOT NULL,
+  mtime REAL NOT NULL,
   mtime_ms REAL NOT NULL,
   size_bytes INTEGER NOT NULL,
   hash TEXT NOT NULL,
   moods TEXT NOT NULL
 );
+`
+
+const INDEX_SCHEMA = `
 CREATE INDEX IF NOT EXISTS memes_source_idx ON memes(source);
+CREATE INDEX IF NOT EXISTS memes_pack_idx ON memes(pack);
 `
 
 function asString(value: unknown): string {
@@ -114,76 +132,112 @@ export function resolveBuiltinMemesDir(): string | undefined {
   }
 }
 
-function scanRoot(root: string | undefined, source: MemeSource): ScannedFile[] {
-  if (root === undefined) return []
-
-  let rootReal: string
+function readableDirectory(path: string): string | undefined {
   try {
-    rootReal = realpathSync(root)
-    if (!statSync(rootReal).isDirectory()) return []
-    accessSync(rootReal, constants.R_OK)
+    const realPath = realpathSync(path)
+    if (!statSync(realPath).isDirectory()) return undefined
+    accessSync(realPath, constants.R_OK)
+    return realPath
+  } catch {
+    return undefined
+  }
+}
+
+function emotionFromRelativePath(relativePath: string): string {
+  const directory = dirname(relativePath)
+  if (directory === '.' || directory === '') return ''
+  return directory.split(sep)[0] ?? ''
+}
+
+/**
+ * Every immediate child of a library root is a package. A package's image tree
+ * is its nested `memes/` directory when present, otherwise the package root.
+ */
+function scanLibraryRoot(root: string | undefined, source: MemeSource): ScannedFile[] {
+  if (root === undefined) return []
+  const rootReal = readableDirectory(root)
+  if (rootReal === undefined) return []
+
+  let entries
+  try {
+    entries = readdirSync(rootReal, { withFileTypes: true })
   } catch {
     return []
   }
+  entries.sort((left, right) => left.name.localeCompare(right.name))
 
   const found: ScannedFile[] = []
-  const walk = (dir: string): void => {
-    let entries
-    try {
-      entries = readdirSync(dir, { withFileTypes: true })
-    } catch {
-      return
-    }
-    entries.sort((left, right) => left.name.localeCompare(right.name))
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue
+    const packPath = readableDirectory(join(rootReal, entry.name))
+    if (packPath === undefined) continue
 
-    for (const entry of entries) {
-      const candidate = join(dir, entry.name)
-      if (entry.isDirectory()) {
-        walk(candidate)
-        continue
-      }
-      if (!entry.isFile()) continue
-      if (!IMAGE_EXTENSIONS.has(extname(entry.name).toLowerCase())) continue
+    const nestedMemes = readableDirectory(join(packPath, 'memes'))
+    const contentRoot = nestedMemes ?? packPath
+    const pack = entry.name
 
+    const walk = (dir: string): void => {
+      let children
       try {
-        const path = realpathSync(candidate)
-        const stat = statSync(path)
-        if (!stat.isFile()) continue
-        accessSync(path, constants.R_OK)
-        found.push({
-          path,
-          source,
-          mtimeMs: stat.mtimeMs,
-          size: stat.size,
-        })
+        children = readdirSync(dir, { withFileTypes: true })
       } catch {
-        // A file can disappear while scanning. Ignore only that entry.
+        return
+      }
+      children.sort((left, right) => left.name.localeCompare(right.name))
+
+      for (const child of children) {
+        const candidate = join(dir, child.name)
+        if (child.isDirectory()) {
+          walk(candidate)
+          continue
+        }
+        if (!child.isFile()) continue
+        if (!IMAGE_EXTENSIONS.has(extname(child.name).toLowerCase())) continue
+
+        try {
+          const path = realpathSync(candidate)
+          const stat = statSync(path)
+          if (!stat.isFile()) continue
+          accessSync(path, constants.R_OK)
+          const relativePath = relative(contentRoot, path)
+          found.push({
+            path,
+            pack,
+            source,
+            emotion: emotionFromRelativePath(relativePath),
+            relativePath,
+            mtime: stat.mtimeMs,
+            size: stat.size,
+          })
+        } catch {
+          // A file can disappear while scanning. Ignore only that entry.
+        }
       }
     }
-  }
 
-  walk(rootReal)
+    walk(contentRoot)
+  }
   return found
 }
 
-function humanizeName(file: string): string {
-  const stem = basename(file, extname(file))
-  const words = splitTerms(stem)
-  return words.length > 0 ? words.join(' ') : stem
+function fileNameStem(file: string): string {
+  return basename(file, extname(file))
 }
 
-function buildMetadata(file: string, root: string): {
+function buildMetadata(file: ScannedFile): {
   name: string
   keywords: string
   moods: Mood[]
 } {
-  const name = humanizeName(file)
-  const relativePath = relative(root, file)
+  const name = fileNameStem(file.path)
   const terms = [...new Set([
-    ...splitTerms(relativePath),
+    ...splitTerms(file.pack),
+    ...splitTerms(file.emotion),
+    ...splitTerms(file.relativePath),
+    name,
     ...splitTerms(name),
   ])]
-  const moods = inferMoods(`${relativePath} ${name}`)
+  const moods = inferMoods(`${file.pack} ${file.emotion} ${file.relativePath} ${name}`)
   const keywords = [...new Set([
     ...terms,
     ...moods,
@@ -196,16 +250,38 @@ function contentHash(file: string): string {
   return createHash('sha1').update(readFileSync(file)).digest('hex')
 }
 
-function rootForSource(
-  source: MemeSource,
-  roots: Readonly<Record<MemeSource, string | undefined>>,
-): string | undefined {
-  return source === 'builtin' ? roots.builtin : roots.user
+function ensureSchema(db: DatabaseSync): boolean {
+  db.exec(TABLE_SCHEMA)
+  const columns = new Set(
+    (db.prepare('PRAGMA table_info(memes)').all() as { name?: unknown }[])
+      .map(row => asString(row.name))
+      .filter(Boolean),
+  )
+  const hadMtimeMs = columns.has('mtime_ms')
+  let migrated = false
+
+  const additions: [string, string][] = [
+    ['pack', "TEXT NOT NULL DEFAULT ''"],
+    ['emotion', "TEXT NOT NULL DEFAULT ''"],
+    ['mtime', 'REAL NOT NULL DEFAULT 0'],
+    ['mtime_ms', 'REAL NOT NULL DEFAULT 0'],
+  ]
+  for (const [column, definition] of additions) {
+    if (columns.has(column)) continue
+    db.exec(`ALTER TABLE memes ADD COLUMN ${column} ${definition}`)
+    migrated = true
+  }
+
+  if (hadMtimeMs) {
+    db.exec('UPDATE memes SET mtime = mtime_ms WHERE mtime = 0')
+  }
+  db.exec(INDEX_SCHEMA)
+  return migrated
 }
 
 function loadExisting(db: DatabaseSync): Map<string, ExistingRow> {
   const rows = db.prepare(
-    `SELECT path, source, name, keywords, mtime_ms, size_bytes, hash, moods
+    `SELECT path, pack, source, emotion, name, keywords, mtime, size_bytes, hash, moods
      FROM memes`,
   ).all() as ExistingRow[]
   const existing = new Map<string, ExistingRow>()
@@ -219,19 +295,21 @@ function loadExisting(db: DatabaseSync): Map<string, ExistingRow> {
 function refreshIndex(
   db: DatabaseSync,
   files: readonly ScannedFile[],
-  roots: Readonly<Record<MemeSource, string | undefined>>,
   rescan: boolean,
 ): void {
   const existing = loadExisting(db)
   const upsert = db.prepare(`
     INSERT INTO memes
-      (path, source, name, keywords, indexed_at, mtime_ms, size_bytes, hash, moods)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      (path, pack, source, emotion, name, keywords, indexed_at, mtime, mtime_ms, size_bytes, hash, moods)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(path) DO UPDATE SET
+      pack = excluded.pack,
       source = excluded.source,
+      emotion = excluded.emotion,
       name = excluded.name,
       keywords = excluded.keywords,
       indexed_at = excluded.indexed_at,
+      mtime = excluded.mtime,
       mtime_ms = excluded.mtime_ms,
       size_bytes = excluded.size_bytes,
       hash = excluded.hash,
@@ -247,12 +325,12 @@ function refreshIndex(
       if (!seen.add(file.path)) continue
       const previous = existing.get(file.path)
       const unchanged = previous !== undefined
-        && asNumber(previous.mtime_ms) === file.mtimeMs
+        && asNumber(previous.mtime) === file.mtime
         && asNumber(previous.size_bytes) === file.size
+        && asString(previous.pack) === file.pack
+        && asString(previous.emotion) === file.emotion
       if (!rescan && unchanged) continue
 
-      const root = rootForSource(file.source, roots)
-      if (root === undefined) continue
       let hash: string
       try {
         hash = contentHash(file.path)
@@ -260,14 +338,17 @@ function refreshIndex(
         continue
       }
 
-      const metadata = buildMetadata(file.path, resolve(root))
+      const metadata = buildMetadata(file)
       upsert.run(
         file.path,
+        file.pack,
         file.source,
+        file.emotion,
         metadata.name,
         metadata.keywords,
         indexedAt,
-        file.mtimeMs,
+        file.mtime,
+        file.mtime,
         file.size,
         hash,
         metadata.moods.join(','),
@@ -286,7 +367,6 @@ function refreshIndex(
 
 function toRecords(
   rows: readonly IndexedRow[],
-  roots: Readonly<Record<MemeSource, string | undefined>>,
 ): MemeRecord[] {
   const byIdentity = new Map<string, MemeRecord>()
   for (const row of rows) {
@@ -302,55 +382,65 @@ function toRecords(
       continue
     }
 
-    const name = asString(row.name) || humanizeName(file)
+    const name = asString(row.name) || fileNameStem(file)
+    const pack = asString(row.pack)
+    const emotion = asString(row.emotion)
     const keywords = asString(row.keywords)
     const moods = asString(row.moods)
       .split(',')
       .filter((mood): mood is Mood => mood !== '')
-    const root = rootForSource(source, roots)
-    const relativePath = root === undefined ? basename(file) : relative(resolve(root), file)
     const record: MemeRecord = {
       identity: `hash:${hash}`,
       file,
+      pack,
       source,
+      emotion,
       name,
       caption: name,
       keywords,
       moods,
       hash,
-      haystack: [relativePath, name, keywords, moods.join(' ')].join(' ').toLowerCase(),
+      mtime: asNumber(row.mtime),
+      haystack: [pack, emotion, name, keywords, moods.join(' ')]
+        .join(' ')
+        .toLowerCase(),
     }
     if (!byIdentity.has(record.identity)) byIdentity.set(record.identity, record)
   }
   return [...byIdentity.values()]
 }
 
-/** Read and incrementally refresh the plugin's filesystem-derived index. */
+/**
+ * Read the plugin's filesystem-derived index. An empty or migrated index, and
+ * an explicit rescan, triggers a complete package-tree scan before selection.
+ */
 export function loadMemeLibrary(
   config: NormalizedQqMemeConfig,
   rescan = false,
 ): MemeLibrary {
   const builtinDir = config.builtinDir ?? resolveBuiltinMemesDir()
-  const roots: Record<MemeSource, string | undefined> = {
-    builtin: builtinDir,
-    user: config.packsDir,
-  }
-  const files = [
-    ...scanRoot(roots.builtin, 'builtin'),
-    ...scanRoot(roots.user, 'user'),
-  ]
 
   mkdirSync(dirname(config.indexDbPath), { recursive: true })
   const db = new DatabaseSync(config.indexDbPath)
   try {
-    db.exec(SCHEMA)
-    refreshIndex(db, files, roots, rescan)
+    const migrated = ensureSchema(db)
+    const countRow = db.prepare('SELECT COUNT(*) AS count FROM memes').get() as {
+      count?: unknown
+    }
+    const count = typeof countRow.count === 'number' ? countRow.count : 0
+    if (rescan || migrated || count === 0) {
+      const files = [
+        ...scanLibraryRoot(builtinDir, 'builtin'),
+        ...scanLibraryRoot(config.packsDir, 'user'),
+      ]
+      refreshIndex(db, files, rescan || migrated)
+    }
     const rows = db.prepare(
-      `SELECT path, source, name, keywords, hash, moods
+      `SELECT path, pack, source, emotion, name, keywords, hash, moods, mtime
        FROM memes ORDER BY path`,
     ).all() as IndexedRow[]
     return {
-      memes: toRecords(rows, roots),
+      memes: toRecords(rows),
       scanDirs: [builtinDir, config.packsDir]
         .filter((dir): dir is string => dir !== undefined),
     }

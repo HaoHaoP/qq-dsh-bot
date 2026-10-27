@@ -111,7 +111,10 @@ export class MemePicker {
     const moodQuery = normalizeMoodQuery(mood)
     const moodMatches = mood === ''
       ? []
-      : eligible.filter(record => record.moods.some(item => item === moodQuery))
+      : eligible.filter(record =>
+          record.emotion.toLowerCase() === moodQuery
+          || record.moods.some(item => item === moodQuery),
+        )
 
     let primary = eligible
     let secondary: MemeRecord[] = []
