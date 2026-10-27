@@ -251,3 +251,17 @@ bypass:
 | 回滚 | docker start astrbot 即可回到旧栈，但 6199 同时只能被一方占用，回滚前先停 dsh-qqbot |
 
 踩到并解决的三件事：docker 里的 napcat 容器绑不上 6099（被裸机 qq 占着）；napcat 只在启动时拨一次 WS，端口死久了就不再重试；dsh 的 npm 装插件要加 --legacy-peer-deps，否则会在 @deepseek-ai/schemastery 的 peer 范围上卡住。
+
+限额与命令通路（2026-10-27 补记，全部实测）
+
+| 项 | 结果 |
+| --- | --- |
+| quota-gate 0.2.0 | 已部署到 /root/.dsh/profiles/qqbot/node_modules/quota-gate，按包名挂载 |
+| 记账 | usage 表实测一行：群 GROUP_ID 当日非缓存输入 212、输出 68、缓存读 14336，1 次请求 |
+| 预算判定 | 用三者之和，缓存读不会被漏掉（store.totalOf） |
+| 拦截 | 把群日预算临时压到 10000 后发消息：usage 不增、quota_notice 记一条、群里只收到提示文案 |
+| 提示文案 | 「哼，今天不聊了，没有大米饭了」，notify-once 只发一次 |
+| 权限口径 | admins 只解锁 /quota top|reset，不豁免预算；/quota 本体任何人可用（用户选定） |
+| 命令通路 | 真机通了。曾因插件装在 profile 之外的绝对路径导致 import.meta.resolve 失败，改按包名挂载后恢复 |
+| 日志位置 | 切到 systemd 后 dsh 的日志走 journalctl -u dsh-qqbot，/root/dsh-qqbot.log 是 nohup 时代的遗物 |
+| 服务守护 | napcat.service 与 dsh-qqbot.service 均已 enabled + active；NapCat 重启后 quick login 直接进，未再扫码 |

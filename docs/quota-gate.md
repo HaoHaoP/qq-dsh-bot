@@ -104,24 +104,21 @@ C 只作兜底：自建 OneBot 反代可以拦截消息，但 NapCat 的 OneBot 
 
 ## 命令通路验证
 
-结论：属于三选一中的第 2 种，**命令通路未验通**。没有取得真实 QQ 中的 `/quota`
-命令回执，不能声称这条兼容路径可用。
+结论：属于三选一中的第 1 种，**真机验通了**（2026-10-27，群内实发 `/quota` 有回应）。
 
-验证过程与卡点：
+真机验证与卡点排查：
 
-1. 本机实际宿主可启动，`dsh --version` 返回 `0.2.1-rc.2`；但当前 dsh profiles
-   都没有安装 `dsh-onebot-qq`，无法在这个宿主里创建真实 OneBot `ChatBridge`。
-2. 从插件目录执行
-   `node -e "console.log(import.meta.resolve('dsh-onebot-qq/package.json'))"`
-   返回 `ERR_MODULE_NOT_FOUND: Cannot find package 'dsh-onebot-qq'`，说明当前安装环境
-   根本走不到桥接代码。
-3. 对 `dsh-onebot-qq@0.9.6` 包做了只读静态核对：`ChatBridge.prototype.tryHandleCommand`
-   和 `sendToChat` 确实存在，入站命令也经过该实例方法；但这只能证明代码形状匹配，
-   不能替代真实 QQ 回执验证。
-4. 没有可用的 OneBot 连接端点与凭据，无法发起真实 QQ 消息；同时该包依赖原生
-   `@napi-rs/canvas`，不符合本卡“不引入原生模块”的约束，因此没有临时安装后伪装成
-   真机验证。
+1. 首次不通，根因是**模块解析路径**而不是补丁逻辑。插件当初放在 `/root/qqbot-plugins/quota-gate`
+   并用绝对路径挂载，它内部 `import.meta.resolve('dsh-onebot-qq/package.json')` 从那个路径
+   往上是找不到 profile 的 `node_modules` 的，实测 `ERR_MODULE_NOT_FOUND`。
+2. 修法：把插件复制进 profile 的 `node_modules/quota-gate`，patch 里改成按包名 `quota-gate` 挂载
+   （与 `dsh-onebot-qq` 同一种方式）。修完解析返回
+   `file:///root/.dsh/profiles/qqbot/node_modules/dsh-onebot-qq/package.json`。
+3. 补丁挂接的方法确实存在：`dsh-onebot-qq/lib/bridge.js:460`
+   定义 `tryHandleCommand(chatId, text, userId, nickname)`，
+   入站侧 `lib/inbound.js:150` 是 `if (await this.ctx.tryHandleCommand(...))`，签名与返回值都对得上。
+4. 修完群内实发 `/quota` 收到用量回复，通路成立。
 
-据此将兼容补丁降级为默认关闭：`onebotCommandBridge` 默认 `false`，只有显式开启时
-才尝试加载并包装 `dsh-onebot-qq/lib/bridge.js`。README 已标注该通路未经验证。
-宿主 `ctx.commands` 中注册的 `/quota` 命令仍独立可用。
+留一条已知旁路风险：这层补丁是在 `dsh-onebot-qq` 自己的斜杠命令门**之前**接的，
+所以群友发 `/quota` 会真的被响应，不受原插件「命令仅管理员」的限制。
+当前口径是「任何人可查本群总量与本人用量，top/reset 仅 admins」，这是用户明确选的。
