@@ -1,24 +1,26 @@
 import type { NormalizedQqMemeConfig } from './config.js';
+import { type Mood } from './moods.js';
+export type MemeSource = 'builtin' | 'user';
 export interface MemeRecord {
     identity: string;
     file: string;
-    tag: string;
-    fileName: string;
+    source: MemeSource;
+    name: string;
     caption: string;
     keywords: string;
+    moods: Mood[];
     hash: string;
     haystack: string;
-    packDir: string;
 }
 export interface MemeLibrary {
     memes: MemeRecord[];
-    packDirs: string[];
+    scanDirs: string[];
 }
 /**
- * Match dsh-meme's supported layouts: the scan root itself may be a pack,
- * direct children are packs, and one nested level is tolerated for old imports.
+ * Locate dsh-meme through Node's package resolver. A host may omit the package;
+ * that is treated as an absent optional scan directory.
  */
-export declare function discoverPackDirs(roots: readonly string[]): string[];
-/** Read every indexed image without writing, moving, or opening a writable DB. */
-export declare function loadMemeLibrary(config: NormalizedQqMemeConfig): MemeLibrary;
+export declare function resolveBuiltinMemesDir(): string | undefined;
+/** Read and incrementally refresh the plugin's filesystem-derived index. */
+export declare function loadMemeLibrary(config: NormalizedQqMemeConfig, rescan?: boolean): MemeLibrary;
 //# sourceMappingURL=library.d.ts.map

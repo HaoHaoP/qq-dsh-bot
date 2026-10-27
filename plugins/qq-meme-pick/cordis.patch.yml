@@ -3,5 +3,4 @@
     name: 'qq-meme-pick'
     # config:
     #   packsDir: "~/.dsh/meme-packs"
-    #   extraPackDirs: []
     #   cooldownSeconds: 300

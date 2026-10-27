@@ -3,13 +3,14 @@ import { isAbsolute, join, resolve } from 'node:path'
 
 export interface QqMemeConfig {
   packsDir?: string
-  extraPackDirs?: string[]
+  builtinDir?: string
   cooldownSeconds?: number
 }
 
 export interface NormalizedQqMemeConfig {
   packsDir: string
-  extraPackDirs: string[]
+  builtinDir?: string
+  indexDbPath: string
   cooldownSeconds: number
 }
 
@@ -51,14 +52,13 @@ export function normalizeConfig(
   const packsDir = typeof input.packsDir === 'string' && input.packsDir.trim() !== ''
     ? absolutePath(input.packsDir, cwd)
     : join(home, 'meme-packs')
-  const extraPackDirs = Array.isArray(input.extraPackDirs)
-    ? input.extraPackDirs
-        .filter((entry): entry is string => typeof entry === 'string' && entry.trim() !== '')
-        .map(entry => absolutePath(entry, cwd))
-    : []
+  const builtinDir = typeof input.builtinDir === 'string' && input.builtinDir.trim() !== ''
+    ? absolutePath(input.builtinDir, cwd)
+    : undefined
   return {
     packsDir,
-    extraPackDirs,
+    builtinDir,
+    indexDbPath: join(home, 'qq-meme-pick', 'index.db'),
     cooldownSeconds: normalizeCooldownSeconds(input.cooldownSeconds),
   }
 }

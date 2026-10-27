@@ -1,11 +1,12 @@
 export interface QqMemeConfig {
     packsDir?: string;
-    extraPackDirs?: string[];
+    builtinDir?: string;
     cooldownSeconds?: number;
 }
 export interface NormalizedQqMemeConfig {
     packsDir: string;
-    extraPackDirs: string[];
+    builtinDir?: string;
+    indexDbPath: string;
     cooldownSeconds: number;
 }
 export declare const DEFAULT_COOLDOWN_SECONDS = 300;

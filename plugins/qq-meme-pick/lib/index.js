@@ -9,7 +9,7 @@ export function createQqMemeTool(config = {}) {
     const picker = new MemePicker({ config });
     return {
         name: 'qq_meme',
-        description: '按情绪或关键词从本地 dsh-meme 图库挑 1-3 张表情包，返回绝对文件路径与说明。' +
+        description: '按情绪或关键词从本地内置与用户表情包目录挑 1-3 张图片，返回绝对文件路径与说明。' +
             '本工具不发送图片；发出去请配合 qq_send_image 使用，把 files 原样传给 qq_send_image。',
         parameters: {
             mood: {
@@ -24,6 +24,11 @@ export function createQqMemeTool(config = {}) {
                 type: 'number',
                 description: '返回张数，默认 1，最多 3。',
                 default: 1,
+            },
+            rescan: {
+                type: 'boolean',
+                description: '为 true 时先完整重扫文件系统索引再挑图，默认 false。',
+                default: false,
             },
         },
         output: {

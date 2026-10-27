@@ -3,6 +3,7 @@ export interface QqMemeRequest {
     mood?: string;
     keyword?: string;
     count?: number;
+    rescan?: boolean;
 }
 export interface QqMemeResult {
     files: string[];

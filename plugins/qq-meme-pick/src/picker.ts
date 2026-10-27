@@ -6,11 +6,13 @@ import {
   loadMemeLibrary,
   type MemeRecord,
 } from './library.js'
+import { normalizeMoodQuery } from './moods.js'
 
 export interface QqMemeRequest {
   mood?: string
   keyword?: string
   count?: number
+  rescan?: boolean
 }
 
 export interface QqMemeResult {
@@ -24,57 +26,10 @@ export interface MemePickerOptions {
   random?: () => number
 }
 
-const MOOD_TAGS: Readonly<Record<string, readonly string[]>> = {
-  happy: ['happy', 'like', 'meow', 'givemoney', 'color'],
-  angry: ['angry', 'fool', 'baka'],
-  sad: ['sad', 'sigh'],
-  shy: ['shy'],
-  confused: ['confused', 'surprised', 'see'],
-  daily: ['daily', 'sleep', 'morning', 'work', 'cpu', 'reply'],
-}
-
-const MOOD_ALIASES: Readonly<Record<string, string>> = {
-  开心: 'happy',
-  高兴: 'happy',
-  快乐: 'happy',
-  好耶: 'happy',
-  得意: 'happy',
-  卖萌: 'happy',
-  喜欢: 'happy',
-  比心: 'happy',
-  生气: 'angry',
-  愤怒: 'angry',
-  恼火: 'angry',
-  难过: 'sad',
-  伤心: 'sad',
-  哭: 'sad',
-  委屈: 'sad',
-  无语: 'sad',
-  害羞: 'shy',
-  脸红: 'shy',
-  困惑: 'confused',
-  疑惑: 'confused',
-  惊讶: 'confused',
-  震惊: 'confused',
-  日常: 'daily',
-  睡觉: 'daily',
-  早上好: 'daily',
-  上班: 'daily',
-  摸鱼: 'daily',
-}
-
 export function normalizeCount(value: unknown): number {
   const count = typeof value === 'number' ? value : Number(value)
   if (!Number.isFinite(count)) return 1
   return Math.max(1, Math.min(3, Math.floor(count)))
-}
-
-function moodTags(mood: string): string[] {
-  const normalized = mood.trim().toLowerCase()
-  if (normalized === '') return []
-  const bucket = MOOD_ALIASES[normalized] ?? normalized
-  const tags = MOOD_TAGS[bucket]
-  return tags === undefined ? [normalized] : [...tags]
 }
 
 function keywordScore(record: MemeRecord, keyword: string): number {
@@ -134,11 +89,11 @@ export class MemePicker {
     const currentTime = this.now()
     this.expireCooldowns(currentTime)
 
-    const library = loadMemeLibrary(this.config)
+    const library = loadMemeLibrary(this.config, input.rescan === true)
     if (library.memes.length === 0) {
       return {
         files: [],
-        caption: '图库为空或索引里的图片文件不可读，没有可发送的表情包。',
+        caption: '内置与用户图库为空或图片文件不可读，没有可发送的表情包。',
       }
     }
 
@@ -153,10 +108,10 @@ export class MemePicker {
     const keyword = typeof input.keyword === 'string' ? input.keyword.trim() : ''
     const mood = typeof input.mood === 'string' ? input.mood.trim() : ''
     const keywordMatches = keyword === '' ? [] : bestKeywordMatches(eligible, keyword)
-    const tags = new Set(moodTags(mood))
+    const moodQuery = normalizeMoodQuery(mood)
     const moodMatches = mood === ''
       ? []
-      : eligible.filter(record => tags.has(record.tag))
+      : eligible.filter(record => record.moods.some(item => item === moodQuery))
 
     let primary = eligible
     let secondary: MemeRecord[] = []

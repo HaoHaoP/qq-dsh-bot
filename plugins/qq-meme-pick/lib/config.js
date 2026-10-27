@@ -32,14 +32,13 @@ export function normalizeConfig(input = {}) {
     const packsDir = typeof input.packsDir === 'string' && input.packsDir.trim() !== ''
         ? absolutePath(input.packsDir, cwd)
         : join(home, 'meme-packs');
-    const extraPackDirs = Array.isArray(input.extraPackDirs)
-        ? input.extraPackDirs
-            .filter((entry) => typeof entry === 'string' && entry.trim() !== '')
-            .map(entry => absolutePath(entry, cwd))
-        : [];
+    const builtinDir = typeof input.builtinDir === 'string' && input.builtinDir.trim() !== ''
+        ? absolutePath(input.builtinDir, cwd)
+        : undefined;
     return {
         packsDir,
-        extraPackDirs,
+        builtinDir,
+        indexDbPath: join(home, 'qq-meme-pick', 'index.db'),
         cooldownSeconds: normalizeCooldownSeconds(input.cooldownSeconds),
     };
 }
