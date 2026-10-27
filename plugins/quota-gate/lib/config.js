@@ -8,6 +8,8 @@ export const DEFAULT_CONFIG = {
     overLimit: 'notify-once',
     notifyText: DEFAULT_NOTIFY_TEXT,
     admins: [],
+    budgetExempt: [],
+    onebotCommandBridge: false,
 };
 function nonNegativeNumber(value, fallback, field) {
     if (value === undefined)
@@ -24,6 +26,14 @@ function stringArray(value, fallback, field) {
         throw new TypeError(`${field} must be an array of strings`);
     }
     return [...new Set(value.map((item) => item.trim()).filter(Boolean))];
+}
+function boolean(value, fallback, field) {
+    if (value === undefined)
+        return fallback;
+    if (typeof value !== 'boolean') {
+        throw new TypeError(`${field} must be a boolean`);
+    }
+    return value;
 }
 export function normalizeConfig(input = {}) {
     const resetAt = input.resetAt ?? DEFAULT_CONFIG.resetAt;
@@ -54,6 +64,8 @@ export function normalizeConfig(input = {}) {
         overLimit,
         notifyText,
         admins: stringArray(input.admins, DEFAULT_CONFIG.admins, 'admins'),
+        budgetExempt: stringArray(input.budgetExempt, DEFAULT_CONFIG.budgetExempt, 'budgetExempt'),
+        onebotCommandBridge: boolean(input.onebotCommandBridge, DEFAULT_CONFIG.onebotCommandBridge, 'onebotCommandBridge'),
     };
 }
 //# sourceMappingURL=config.js.map

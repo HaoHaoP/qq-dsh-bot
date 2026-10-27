@@ -1,6 +1,6 @@
 {
   "name": "quota-gate",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Daily group and per-user token budget gate for dsh",
   "type": "module",
   "main": "lib/index.js",

@@ -7,6 +7,8 @@ export interface QuotaConfig {
     overLimit: 'silent' | 'notify-once';
     notifyText: string;
     admins: string[];
+    budgetExempt: string[];
+    onebotCommandBridge: boolean;
 }
 export interface TokenUsage {
     inputTokens: number;

@@ -24,7 +24,6 @@ async function loadOneBotBridge() {
         return undefined;
     }
 }
-const oneBotBridgeClass = await loadOneBotBridge();
 function defaultDatabasePath() {
     const home = process.env.DSH_HOME !== undefined && process.env.DSH_HOME !== ''
         ? process.env.DSH_HOME
@@ -34,7 +33,7 @@ function defaultDatabasePath() {
 function loggerOf(ctx) {
     return ctx.logger ?? console;
 }
-export function apply(ctx, input = {}) {
+export async function apply(ctx, input = {}) {
     const config = normalizeConfig(input);
     const logger = loggerOf(ctx);
     const store = openUsageStore(defaultDatabasePath(), {
@@ -78,8 +77,14 @@ export function apply(ctx, input = {}) {
         },
     });
     let removeOneBotPatch;
-    if (oneBotBridgeClass !== undefined) {
-        removeOneBotPatch = installOneBotCommandBridge(oneBotBridgeClass, quota);
+    if (config.onebotCommandBridge) {
+        const oneBotBridgeClass = await loadOneBotBridge();
+        if (oneBotBridgeClass === undefined) {
+            logger.warn?.('onebotCommandBridge is enabled, but dsh-onebot-qq/lib/bridge.js is unavailable; /quota is only registered through the host commands service.');
+        }
+        else {
+            removeOneBotPatch = installOneBotCommandBridge(oneBotBridgeClass, quota);
+        }
     }
     const dispose = () => {
         removeOneBotPatch?.();

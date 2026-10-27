@@ -36,8 +36,6 @@ async function loadOneBotBridge(): Promise<(new (...args: never[]) => unknown) |
   }
 }
 
-const oneBotBridgeClass = await loadOneBotBridge()
-
 function defaultDatabasePath(): string {
   const home =
     process.env.DSH_HOME !== undefined && process.env.DSH_HOME !== ''
@@ -50,7 +48,10 @@ function loggerOf(ctx: PluginContext) {
   return ctx.logger ?? console
 }
 
-export function apply(ctx: PluginContext, input: Partial<QuotaConfig> = {}): void {
+export async function apply(
+  ctx: PluginContext,
+  input: Partial<QuotaConfig> = {},
+): Promise<void> {
   const config = normalizeConfig(input)
   const logger = loggerOf(ctx)
   const store = openUsageStore(defaultDatabasePath(), {
@@ -98,11 +99,18 @@ export function apply(ctx: PluginContext, input: Partial<QuotaConfig> = {}): voi
   })
 
   let removeOneBotPatch: (() => void) | undefined
-  if (oneBotBridgeClass !== undefined) {
-    removeOneBotPatch = installOneBotCommandBridge(
-      oneBotBridgeClass as never,
-      quota,
-    )
+  if (config.onebotCommandBridge) {
+    const oneBotBridgeClass = await loadOneBotBridge()
+    if (oneBotBridgeClass === undefined) {
+      logger.warn?.(
+        'onebotCommandBridge is enabled, but dsh-onebot-qq/lib/bridge.js is unavailable; /quota is only registered through the host commands service.',
+      )
+    } else {
+      removeOneBotPatch = installOneBotCommandBridge(
+        oneBotBridgeClass as never,
+        quota,
+      )
+    }
   }
 
   const dispose = () => {

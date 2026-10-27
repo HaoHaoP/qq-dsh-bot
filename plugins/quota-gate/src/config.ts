@@ -12,6 +12,8 @@ export const DEFAULT_CONFIG: QuotaConfig = {
   overLimit: 'notify-once',
   notifyText: DEFAULT_NOTIFY_TEXT,
   admins: [],
+  budgetExempt: [],
+  onebotCommandBridge: false,
 }
 
 function nonNegativeNumber(
@@ -32,6 +34,14 @@ function stringArray(value: unknown, fallback: string[], field: string): string[
     throw new TypeError(`${field} must be an array of strings`)
   }
   return [...new Set(value.map((item) => item.trim()).filter(Boolean))]
+}
+
+function boolean(value: unknown, fallback: boolean, field: string): boolean {
+  if (value === undefined) return fallback
+  if (typeof value !== 'boolean') {
+    throw new TypeError(`${field} must be a boolean`)
+  }
+  return value
 }
 
 export function normalizeConfig(input: Partial<QuotaConfig> = {}): QuotaConfig {
@@ -74,5 +84,15 @@ export function normalizeConfig(input: Partial<QuotaConfig> = {}): QuotaConfig {
     overLimit,
     notifyText,
     admins: stringArray(input.admins, DEFAULT_CONFIG.admins, 'admins'),
+    budgetExempt: stringArray(
+      input.budgetExempt,
+      DEFAULT_CONFIG.budgetExempt,
+      'budgetExempt',
+    ),
+    onebotCommandBridge: boolean(
+      input.onebotCommandBridge,
+      DEFAULT_CONFIG.onebotCommandBridge,
+      'onebotCommandBridge',
+    ),
   }
 }

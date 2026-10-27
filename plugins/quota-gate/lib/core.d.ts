@@ -27,6 +27,7 @@ export declare class QuotaService {
     private day;
     private isTracked;
     isAdmin(userId: string): boolean;
+    isBudgetExempt(userId: string): boolean;
     evaluate(actor: ScopeWithoutDay, now?: Date): LimitVerdict;
     record(actor: ScopeWithoutDay, usage: TokenUsage, now?: Date): UsageRow;
     private noticeFor;

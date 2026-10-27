@@ -10,3 +10,5 @@
     #   overLimit: notify-once
     #   notifyText: "哼，今天不聊了，尾鳍没力气了。明天再来找我。（{used}/{limit}，{resetAt} 恢复）"
     #   admins: ["ADMIN_UIN"]
+    #   budgetExempt: []
+    #   onebotCommandBridge: false

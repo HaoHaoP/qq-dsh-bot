@@ -63,14 +63,17 @@ export class QuotaService {
     isAdmin(userId) {
         return this.config.admins.includes(userId);
     }
+    isBudgetExempt(userId) {
+        return this.config.budgetExempt.includes(userId);
+    }
     evaluate(actor, now = this.now()) {
         const day = this.day(now);
         const scope = withDay(actor, day);
         const groupUsed = this.store.groupTotal(scope);
         const userUsed = totalOf(this.store.get(scope));
-        const allowedByAdmin = this.isAdmin(actor.userId);
         let hit;
-        if (!allowedByAdmin && this.isTracked(actor.groupId)) {
+        if (!this.isBudgetExempt(actor.userId) &&
+            this.isTracked(actor.groupId)) {
             if (this.config.groupDaily > 0 && groupUsed >= this.config.groupDaily) {
                 hit = 'group';
             }
@@ -96,6 +99,8 @@ export class QuotaService {
     }
     record(actor, usage, now = this.now()) {
         const scope = withDay(actor, this.day(now));
+        if (this.isBudgetExempt(actor.userId))
+            return this.store.get(scope);
         this.store.record(scope, usageDelta(usage), now.toISOString());
         return this.store.get(scope);
     }
@@ -209,6 +214,11 @@ export class QuotaService {
     }
 }
 export function fallbackConfig() {
-    return { ...DEFAULT_CONFIG, groups: [], admins: [] };
+    return {
+        ...DEFAULT_CONFIG,
+        groups: [],
+        admins: [],
+        budgetExempt: [],
+    };
 }
 //# sourceMappingURL=core.js.map

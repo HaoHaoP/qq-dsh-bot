@@ -243,6 +243,123 @@ test('group budget blocks after usage from multiple members reaches it', async (
   assert.match(textOf(blocked), /15\/15/)
 })
 
+test('admin is counted and blocked by the personal budget', async (t) => {
+  const f = fixture({
+    config: { groupDaily: 1_000, userDaily: 10, admins: ['9009'] },
+  })
+  t.after(() => f.close())
+  const admin = { groupId: '2002', userId: '9009' }
+
+  f.service.record(admin, { inputTokens: 9, outputTokens: 1 })
+  const verdict = f.service.evaluate(admin)
+  let upstreamCalls = 0
+  const blocked = await collect(
+    f.service.handleStream(options('9009'), async function* () {
+      upstreamCalls += 1
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    }),
+  )
+
+  assert.equal(verdict.allowed, false)
+  assert.equal(verdict.hit, 'user')
+  assert.equal(verdict.userUsed, 10)
+  assert.equal(upstreamCalls, 0)
+  assert.match(textOf(blocked), /10\/10/)
+})
+
+test('admin is counted and blocked by the group budget', async (t) => {
+  const f = fixture({
+    config: { groupDaily: 10, userDaily: 1_000, admins: ['9009'] },
+  })
+  t.after(() => f.close())
+  const admin = { groupId: '2002', userId: '9009' }
+
+  f.service.record(admin, { inputTokens: 10, outputTokens: 0 })
+  const verdict = f.service.evaluate(admin)
+
+  assert.equal(verdict.allowed, false)
+  assert.equal(verdict.hit, 'group')
+  assert.equal(verdict.groupUsed, 10)
+})
+
+test('admin can still reset the group budget after being blocked', (t) => {
+  const f = fixture({
+    config: { groupDaily: 10, userDaily: 10, admins: ['9009'] },
+  })
+  t.after(() => f.close())
+  const admin = { groupId: '2002', userId: '9009' }
+
+  f.service.record(admin, { inputTokens: 10, outputTokens: 0 })
+  assert.equal(f.service.evaluate(admin).allowed, false)
+
+  const result = f.service.executeCommand(admin, 'reset')
+  assert.equal(result.kind, 'success')
+  assert.match(result.text, /已重置本群今日额度/)
+  assert.equal(f.service.evaluate(admin).allowed, true)
+})
+
+test('budgetExempt users bypass blocking and are not billed', async (t) => {
+  const f = fixture({
+    config: {
+      groupDaily: 10,
+      userDaily: 10,
+      admins: [],
+      budgetExempt: ['9008'],
+    },
+  })
+  t.after(() => f.close())
+
+  f.service.record(
+    { groupId: '2002', userId: '1001' },
+    { inputTokens: 10, outputTokens: 0 },
+  )
+  let upstreamCalls = 0
+  await collect(
+    f.service.handleStream(options('9008'), async function* () {
+      upstreamCalls += 1
+      yield {
+        type: 'usage',
+        usage: { inputTokens: 500, outputTokens: 100 },
+      }
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    }),
+  )
+
+  const exempt = { groupId: '2002', userId: '9008' }
+  const verdict = f.service.evaluate(exempt)
+  assert.equal(upstreamCalls, 1)
+  assert.equal(verdict.allowed, true)
+  assert.equal(verdict.userUsed, 0)
+  assert.equal(verdict.groupUsed, 10)
+})
+
+test('empty permission lists keep normal budget behavior', (t) => {
+  const config = normalizeConfig({
+    groupDaily: 100,
+    userDaily: 10,
+    admins: [],
+    budgetExempt: [],
+  })
+  assert.deepEqual(config.admins, [])
+  assert.deepEqual(config.budgetExempt, [])
+  assert.equal(config.onebotCommandBridge, false)
+
+  const f = fixture({
+    config: {
+      groupDaily: config.groupDaily,
+      userDaily: config.userDaily,
+      admins: config.admins,
+      budgetExempt: config.budgetExempt,
+    },
+  })
+  t.after(() => f.close())
+  const actor = { groupId: '2002', userId: '1001' }
+
+  f.service.record(actor, { inputTokens: 10, outputTokens: 0 })
+  assert.equal(f.service.evaluate(actor).allowed, false)
+  assert.equal(f.service.evaluate(actor).hit, 'user')
+})
+
 test('OneBot compatibility routes /quota commands and restores the method on dispose', async (t) => {
   const f = fixture({ config: { admins: ['9009'] } })
   t.after(() => f.close())
