@@ -4,6 +4,7 @@
     # config:
     #   enabled: true
     #   groups: ["GROUP_ID"]
+    #   # These timing keys are top-level config keys, not children of `timing`.
     #   waitingTime: 6
     #   secretaryDebounceTime: 6
     #   observationTimeout: 90

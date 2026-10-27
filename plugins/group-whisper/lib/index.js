@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { createModelDecider } from './analyzer.js';
 import { normalizeConfig } from './config.js';
 import { WhisperGate } from './gate.js';
-import { installInboundAdapter, loadOneBotBridge } from './onebot.js';
+import { installInboundAdapter, loadOneBotInbound } from './onebot.js';
 import { openStateStore } from './store.js';
 export * from './analyzer.js';
 export * from './config.js';
@@ -30,9 +30,9 @@ export async function apply(ctx, input = {}, options = {}) {
     if (!config.enabled)
         return;
     const logger = ctx.logger ?? console;
-    const Bridge = await loadOneBotBridge();
-    if (Bridge === undefined) {
-        logger.warn?.('[group-whisper] dsh-onebot-qq/lib/bridge.js is unavailable; group gate is inactive');
+    const onebot = await loadOneBotInbound();
+    if (onebot === undefined) {
+        logger.warn?.('[group-whisper] dsh-onebot-qq/lib/inbound.js is unavailable; group gate is inactive');
         return;
     }
     const store = openStateStore(options.databasePath ?? defaultDatabasePath());
@@ -54,9 +54,10 @@ export async function apply(ctx, input = {}, options = {}) {
         log: message => logger.info?.(message),
     });
     adapter = installInboundAdapter({
-        Bridge,
+        Pipeline: onebot.Pipeline,
         gate,
         config,
+        isInjected: onebot.isInjected,
         log: message => logger.info?.(message),
     });
     ctx.on('session/event', (session, event) => {

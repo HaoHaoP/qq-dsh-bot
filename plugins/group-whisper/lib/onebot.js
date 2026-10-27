@@ -68,8 +68,8 @@ function parseText(event, selfId) {
     const text = parts.join('').trim() || stripCq(raw);
     return { text, mentioned };
 }
-function groupAllowed(bridge, groupId) {
-    const policy = bridge.deps?.policy;
+function groupAllowed(ctx, groupId) {
+    const policy = ctx.policy;
     if (policy === undefined)
         return true;
     if (policy.groupPolicy === 'disabled')
@@ -85,29 +85,28 @@ function isCommand(text) {
         .trim()
         .startsWith('/');
 }
-function normalize(bridge, event, now) {
-    if (event.message_type !== 'group')
+function normalize(pipeline, inbound, now) {
+    if (inbound.kind !== 'group')
         return undefined;
-    const groupId = String(event.group_id ?? '');
-    const userId = String(event.user_id ?? '');
+    const groupId = inbound.groupId;
+    const userId = inbound.userId;
     if (groupId === '' || userId === '')
         return undefined;
-    const selfId = String(event.self_id ?? bridge.deps?.connection?.selfId ?? '');
+    const selfId = pipeline.ctx.selfId?.() ?? pipeline.ctx.config?.botQQ ?? '';
     if (userId === selfId)
         return undefined;
-    const parsed = parseText(event, selfId);
-    const nickname = sanitizeNickname(event.sender?.card !== undefined && event.sender.card !== ''
-        ? event.sender.card
-        : event.sender?.nickname !== undefined && event.sender.nickname !== ''
-            ? event.sender.nickname
-            : userId);
+    const parsed = parseText({
+        message: inbound.segments,
+        raw_message: inbound.raw,
+    }, selfId);
+    const nickname = sanitizeNickname(inbound.nickname);
     return {
         chatId: `group:${groupId}`,
         groupId,
         userId,
         nickname: nickname === '' ? userId : nickname,
         text: parsed.text,
-        messageId: event.message_id === undefined ? undefined : String(event.message_id),
+        messageId: inbound.messageId,
         mentioned: parsed.mentioned,
         at: now,
     };
@@ -123,55 +122,133 @@ export async function loadOneBotBridge() {
         return undefined;
     }
 }
+export async function loadOneBotInbound() {
+    try {
+        const packageUrl = import.meta.resolve('dsh-onebot-qq/package.json');
+        const inboundUrl = new URL('lib/inbound.js', packageUrl).href;
+        const injectUrl = new URL('lib/inject.js', packageUrl).href;
+        const inboundModule = await import(inboundUrl);
+        if (inboundModule.InboundPipeline === undefined)
+            return undefined;
+        let currentInjectRound;
+        try {
+            const injectModule = await import(injectUrl);
+            currentInjectRound = injectModule.currentInjectRound;
+        }
+        catch {
+            // Injection is a debug-only channel. Losing that marker must not disable
+            // the ordinary inbound hook.
+        }
+        return {
+            Pipeline: inboundModule.InboundPipeline,
+            isInjected: () => currentInjectRound?.() !== undefined,
+        };
+    }
+    catch {
+        return undefined;
+    }
+}
 export function installInboundAdapter(options) {
-    const { Bridge, gate, config } = options;
+    const { Pipeline, gate, config } = options;
     const now = options.now ?? Date.now;
-    const prototype = Bridge.prototype;
-    const original = prototype.handleInbound;
-    let activeBridge;
-    const wrappedHandleInbound = async function handleInbound(event, opts) {
-        activeBridge = this;
-        if (opts?.injected === true) {
-            return original.call(this, event, opts);
+    const prototype = Pipeline.prototype;
+    const original = prototype.processInbound;
+    const instanceWrappers = new Map();
+    const knownChats = new Set();
+    const pipelineByChat = new Map();
+    const sessionToChat = new Map();
+    let activePipeline;
+    const intercept = async function processInbound(inbound) {
+        activePipeline = this;
+        if (options.isInjected?.() === true) {
+            return original.call(this, inbound);
         }
-        if (event.message_type !== 'group') {
-            return original.call(this, event, opts);
+        if (inbound.kind !== 'group') {
+            return original.call(this, inbound);
         }
-        const groupId = String(event.group_id ?? '');
+        const groupId = inbound.groupId;
         if (groupId === '' ||
-            !groupAllowed(this, groupId) ||
+            !groupAllowed(this.ctx, groupId) ||
             (config.groups.length > 0 && !config.groups.includes(groupId))) {
-            return original.call(this, event, opts);
+            return original.call(this, inbound);
         }
-        const message = normalize(this, event, now());
+        const message = normalize(this, inbound, now());
         if (message === undefined)
-            return original.call(this, event, opts);
+            return original.call(this, inbound);
         if (isCommand(message.text)) {
-            return original.call(this, event, opts);
+            return original.call(this, inbound);
         }
+        knownChats.add(message.chatId);
+        pipelineByChat.set(message.chatId, this);
         gate.observe(message);
     };
-    prototype.handleInbound = wrappedHandleInbound;
+    // The bridge looks up processInbound on its live InboundPipeline instance for
+    // every event. This prototype function is only a discovery trampoline: on the
+    // first event it installs an own property on that already-constructed
+    // instance, so routing does not depend on constructor-time callback snapshots.
+    const discoverAndWrap = async function processInbound(inbound) {
+        const pipeline = this;
+        let wrapped = instanceWrappers.get(pipeline);
+        if (wrapped === undefined) {
+            wrapped = async function installedProcessInbound(value) {
+                return intercept.call(this, value);
+            };
+            instanceWrappers.set(pipeline, wrapped);
+            Object.defineProperty(pipeline, 'processInbound', {
+                configurable: true,
+                enumerable: false,
+                value: wrapped,
+                writable: true,
+            });
+        }
+        return wrapped.call(pipeline, inbound);
+    };
+    prototype.processInbound = discoverAndWrap;
+    options.log?.('[group-whisper] inbound hook mounted on InboundPipeline.processInbound');
+    const pipelineForChat = (chatId) => pipelineByChat.get(chatId) ?? activePipeline;
     return {
         chatForSession(sessionId) {
-            return activeBridge?.bySession?.get(sessionId);
+            const mapped = sessionToChat.get(sessionId);
+            if (mapped !== undefined)
+                return mapped;
+            for (const chatId of knownChats) {
+                const pipeline = pipelineByChat.get(chatId);
+                if (pipeline?.ctx.getChat?.(chatId)?.sessionId === sessionId) {
+                    sessionToChat.set(sessionId, chatId);
+                    return chatId;
+                }
+            }
+            return undefined;
         },
         isBusy(chatId) {
-            return activeBridge?.chats?.get(chatId)?.agent?.status === 'running';
+            return pipelineForChat(chatId)?.ctx.getChat?.(chatId)?.agent?.status === 'running';
         },
-        bridge() {
-            return activeBridge;
+        pipeline() {
+            return activePipeline;
         },
         async dispatch(input) {
-            const bridge = activeBridge;
-            if (bridge === undefined || bridge.dispatchFollowup === undefined) {
-                throw new Error('dsh-onebot bridge is unavailable');
+            const pipeline = pipelineForChat(input.chatId);
+            if (pipeline?.ctx.dispatchFollowup === undefined) {
+                throw new Error('dsh-onebot InboundPipeline is unavailable');
             }
-            await bridge.dispatchFollowup(input.chatId, input.prompt, 'member', input.nickname);
+            await pipeline.ctx.dispatchFollowup(input.chatId, input.prompt, 'member', input.nickname);
+            const sessionId = pipeline.ctx.getChat?.(input.chatId)?.sessionId;
+            if (sessionId !== undefined)
+                sessionToChat.set(sessionId, input.chatId);
         },
         remove() {
-            if (prototype.handleInbound === wrappedHandleInbound) {
-                prototype.handleInbound = original;
+            for (const [pipeline, wrapped] of instanceWrappers) {
+                if (pipeline.processInbound === wrapped) {
+                    delete pipeline.processInbound;
+                }
+            }
+            instanceWrappers.clear();
+            knownChats.clear();
+            pipelineByChat.clear();
+            sessionToChat.clear();
+            activePipeline = undefined;
+            if (prototype.processInbound === discoverAndWrap) {
+                prototype.processInbound = original;
             }
         },
     };

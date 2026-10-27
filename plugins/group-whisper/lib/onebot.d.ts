@@ -22,31 +22,49 @@ interface RawOneBotEvent {
         nickname?: string;
     };
 }
-interface BridgeChat {
+interface NormalizedInboundLike {
+    kind: 'private' | 'group';
+    userId: string;
+    groupId: string;
+    chatId: string;
+    segments?: RawSegment[];
+    raw: string;
+    text: string;
+    messageId?: string;
+    nickname: string;
+}
+interface InboundChatLike {
+    sessionId?: string;
     agent?: {
         status?: string;
     };
 }
-interface ChatBridgeLike {
-    deps?: {
-        connection?: {
-            selfId?: string;
-        };
-        policy?: {
-            groupPolicy?: string;
-            groupAllowFrom?: readonly string[];
-        };
-        config?: {
-            ignoreSelf?: boolean;
-        };
+interface InboundContextLike {
+    policy?: {
+        groupPolicy?: string;
+        groupAllowFrom?: readonly string[];
     };
-    chats?: Map<string, BridgeChat>;
-    bySession?: Map<string, string>;
+    config?: {
+        botQQ?: string;
+    };
+    selfId?(): string;
+    getChat?(chatId: string): InboundChatLike | undefined;
+    dispatchFollowup?(chatId: string, text: string, role: 'admin' | 'member', nickname?: string): Promise<void>;
+}
+interface InboundPipelineLike {
+    ctx: InboundContextLike;
+    processInbound(inbound: NormalizedInboundLike): Promise<void>;
+}
+type ProcessInbound = (this: InboundPipelineLike, inbound: NormalizedInboundLike) => Promise<void>;
+type InboundPipelineConstructor = {
+    prototype: InboundPipelineLike & {
+        processInbound: ProcessInbound;
+    };
+};
+interface ChatBridgeLike {
     handleInbound(event: RawOneBotEvent, opts?: {
         injected?: boolean;
     }): Promise<void>;
-    ensureChat?(chatId: string, nickname: string): Promise<unknown>;
-    dispatchFollowup?(chatId: string, text: string, role: 'admin' | 'member', nickname?: string): Promise<void>;
 }
 type ChatBridgeConstructor = {
     prototype: ChatBridgeLike & {
@@ -55,18 +73,24 @@ type ChatBridgeConstructor = {
         }): Promise<void>;
     };
 };
+export interface LoadedOneBotInbound {
+    Pipeline: InboundPipelineConstructor;
+    isInjected(): boolean;
+}
 export interface InboundAdapter {
     chatForSession(sessionId: string): string | undefined;
     dispatch(input: DispatchInput): Promise<void>;
     isBusy(chatId: string): boolean;
-    bridge(): ChatBridgeLike | undefined;
+    pipeline(): InboundPipelineLike | undefined;
     remove(): void;
 }
 export declare function loadOneBotBridge(): Promise<ChatBridgeConstructor | undefined>;
+export declare function loadOneBotInbound(): Promise<LoadedOneBotInbound | undefined>;
 export declare function installInboundAdapter(options: {
-    Bridge: ChatBridgeConstructor;
+    Pipeline: InboundPipelineConstructor;
     gate: WhisperGate;
     config: GroupWhisperConfig;
+    isInjected?(): boolean;
     now?(): number;
     log?(message: string): void;
 }): InboundAdapter;

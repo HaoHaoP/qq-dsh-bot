@@ -2,7 +2,7 @@
 
 把 QQ 个人号接进 DeepSeek Harness 的一套配置与自研插件。
 
-协议端用 SnowLuma，智能体用 dsh，通道用 OneBot v11。自研插件以 AGPL-3.0 开源。
+协议端用 SnowLuma，智能体用 dsh，通道用 OneBot v11。自研插件以 MIT 开源。
 
 ## 目录
 
@@ -18,4 +18,4 @@
 
 ## 许可
 
-AGPL-3.0
+MIT

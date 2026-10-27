@@ -36,6 +36,15 @@
 | `leaveReply.denseConversationThreshold` | `1` | 观察窗口内达到该消息数视为热聊 |
 | `leaveReply.familiarityCooldownDuration` | `1800` | 同话题普通主动发言冷却秒数 |
 
+`waitingTime`、`secretaryDebounceTime`、`observationTimeout` 都是 `config` 的直接子键，不要放进 `timing`：
+
+```yaml
+config:
+  waitingTime: 6
+  secretaryDebounceTime: 6
+  observationTimeout: 90
+```
+
 示例配置：
 
 ```yaml
@@ -76,7 +85,7 @@ turn(chat_id, at, mode, action, reason, chars, cost)
 
 ## 通道兼容
 
-`dsh-onebot-qq@0.9.6` 没有公开的原始入站事件总线，且会在 `requireMention` 门丢弃非 @ 消息。本插件通过包内解析加载 `ChatBridge`，临时包装其公开声明的 `handleInbound` 方法，并在卸载时恢复。具体源码证据和判定链见 [docs/group-whisper.md](../../docs/group-whisper.md)。
+`dsh-onebot-qq@0.9.6` 没有公开的原始入站事件总线，且会在 `requireMention` 门丢弃非 @ 消息。本插件通过包内解析加载 `InboundPipeline`，在桥每次动态查找的 `processInbound` 方法上安装入口包装；实例首次到达时还会把包装固定到该实例，卸载时恢复。具体源码证据、失败假设的反证和判定链见 [docs/group-whisper.md](../../docs/group-whisper.md)。
 
 升级 `dsh-onebot-qq` 后必须重新检查这层兼容包装。
 
@@ -91,6 +100,7 @@ turn(chat_id, at, mode, action, reason, chars, cost)
 ```bash
 cd plugins/group-whisper
 npm test
+npm run self-check
 ```
 
 仓库级验收：

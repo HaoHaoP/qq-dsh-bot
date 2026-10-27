@@ -8,7 +8,7 @@
 
 ### 1. 非 @ 群消息：没有公开总线，但存在可包装的原始入站方法
 
-结论：**能拿到非 @ 原始群消息，但依赖 `ChatBridge.handleInbound` 兼容包装，不是公开事件总线或 middleware。**
+结论：**能拿到非 @ 原始群消息，但依赖包内 `InboundPipeline.processInbound` 兼容接入，不是公开事件总线或 middleware。**
 
 - `dsh-onebot-qq/lib/index.js:311-313` 把 OneBot 连接的唯一入站回调接到
   `bridge.handleInbound(event)`；该 bridge 在 `lib/index.js:327-420` 内局部构造，没有注册成 host service。
@@ -21,7 +21,8 @@
   `session/event` 与 `session/flush`。它不是 OneBot 原始入站事件总线，不能用来判断群是否安静。
 - 可用的运行面是 `lib/types/bridge.d.ts:348-355` 公开声明的
   `ChatBridge.handleInbound(event, opts?)`；插件通过 `import.meta.resolve('dsh-onebot-qq/package.json')`
-  加载 `lib/bridge.js` 并临时包装原型方法，卸载时恢复。`quota-gate` 已用同一包内解析方式完成过兼容补丁，但本机制仍应视为对通道版本的兼容依赖，升级时需要回归。
+  加载包内模块并安装兼容入口，卸载时恢复。最终入口不在 `handleInbound`，而是在桥每次动态调用的
+  `InboundPipeline.processInbound`；原因和构造后再包装的验证见下文「挂载时机」。本机制仍应视为对通道版本的兼容依赖，升级时需要回归。
 
 ### 2. 主动发起回合：Agent 有公开的 followup 入口
 
@@ -47,9 +48,74 @@
   `turn/start`、`assistant/message`、`turn/end` 上驱动该群出站；因此主动 followup
   产生的 assistant 消息仍由 QQ 通道发送回该群。
 
+## 挂载时机
+
+### 假设核验：箭头闭包没有固定 `tryHandleCommand` 的方法目标
+
+`dsh-onebot-qq@0.9.6` 的 `lib/bridge.js:126-144` 在构造 `InboundPipeline` 时，确实传入了
+`tryHandleCommand: (...) => this.tryHandleCommand(...)` 这个箭头闭包（`:136`）；入站管线再在
+`lib/inbound.js:150` 通过 `this.ctx.tryHandleCommand(...)` 调用它。
+
+但箭头捕获的是桥实例 `this`，不是调用发生时的具体方法函数。闭包体内的
+`this.tryHandleCommand` 仍会在每次调用时沿实例、prototype 重新查找。因此“实例构造后修改
+`ChatBridge.prototype.tryHandleCommand` 一定无效”这个结论不成立。
+
+单元测试用一个同样形状的假桥核验：先构造实例，此时管线保存
+`tryHandleCommand: (...args) => this.tryHandleCommand(...args)`；随后替换
+`FakeChatBridge.prototype.tryHandleCommand`，再触发一次入站管线。替换后的方法实际被调用一次。
+如果构造器改为先保存函数值（例如 `const target = this.tryHandleCommand`）再闭包调用，才会与上述
+现象一致；当前 0.9.6 源码不是这种写法。
+
+所以本卡给出的箭头闭包链路可以证明“**捕获函数值**的补丁会失效”，但不能单独解释线上
+`group-whisper` 对 `handleInbound` 的包装为何零调用。后者还可能来自插件解析到与正在运行的
+通道不同的模块副本，或包装根本没有执行到注册点；仅凭零日志无法区分。新实现因此不再依赖这个
+无法由伪桥单独证实的因果推断，并新增启动日志
+`[group-whisper] inbound hook mounted on InboundPipeline.processInbound` 来区分“未挂载”和“已挂载但无消息命中”。
+
+### 最终接法：在动态分派的 `InboundPipeline.processInbound` 上安装入口
+
+桥的 `lib/bridge.js:369-371` 每次都以 `this.inbound.processInbound(inbound)` 动态调用当前
+管线实例的方法；`lib/inbound.js:94` 才是处理统一入站对象的实际入口。它位于
+`lib/inbound.js:119-124` 的 `requireMention` 丢弃逻辑之前，适合记录所有群消息。
+
+插件在包内解析 `lib/inbound.js`，先改 `InboundPipeline.prototype.processInbound` 作为发现入口；第一条
+消息到达时用 `this` 拿到**已经构造完成**的管线实例，在该实例上安装 own-property 包装。之后桥继续
+动态读取同一个实例属性，因此不会再受构造时回调快照影响。包装先让插件记录群消息；命令、私聊和
+调试注入事件则调用原方法放行。卸载时同时删除实例包装并恢复 prototype。
+
+这条路径比直接猜 `ChatBridge` 实例更可控：0.9.6 的 bridge 在
+`lib/index.js:327-420` 内由局部变量构造并立即启动，没有注册成宿主 service，插件拿不到公开实例；
+而 `processInbound` 是桥在**每条事件发生时**读取的动态方法。测试覆盖了“先构造假桥，再安装包装，
+再触发群消息”，并断言消息仍进入包装、原始入站方法未被调用。
+
+配置的等待键保持顶层：
+
+```yaml
+config:
+  waitingTime: 6
+  secretaryDebounceTime: 6
+  observationTimeout: 90
+```
+
+不要把这三项写成 `timing.waitingTime`、`timing.secretaryDebounceTime` 或
+`timing.observationTimeout`；`src/config.ts` 的 `DEFAULT_CONFIG` 与 `normalizeConfig` 只读取顶层键。
+
+### 上线判据
+
+重启后，在配置允许的群里 @ 机器人一次，无需等模型回答，日志应立即出现一行：
+
+```json
+{"plugin":"group-whisper","stage":"presence","chat_id":"group:<群号>","state":"present","reason":"mentioned"}
+```
+
+看到 `stage=presence` 且 `reason=mentioned` 就说明入站包装真的执行并进入了门控；若仍只有通道的
+`followup from group` / `turn/end` 而没有这一行，说明运行中的 dsh-onebot 与插件解析到的不是同一模块副本，
+或新版本尚未加载，而不是模型或能量判定问题。安静窗口结束后还应出现
+`stage=patrol`、`mode=mention` 的判定行。
+
 ## 判定链落点
 
-门控落在**通道入站方法的兼容包装层**：非命令群消息在 `ChatBridge.handleInbound`
+门控落在**通道动态分派的管线入口包装层**：非命令群消息在 `InboundPipeline.processInbound`
 进入 Agent 前被旁路记录，安静窗口到期后由插件执行能量/冷却检查和秘书模型判定。
 回复动作落在**会话层**：插件调用同一 QQ chat 的 `ensureChat` + `dispatchFollowup`，
 让同一个群 Agent 的 session 产生回合；出站仍由通道的 `session/event` 监听器完成。

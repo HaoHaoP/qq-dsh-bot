@@ -344,26 +344,119 @@ test('enabled false returns without touching the context or opening a database',
   assert.equal(effectCalls, 0)
 })
 
-test('channel adapter observes raw group messages before onebot gates mentions', async () => {
-  const observed = []
-  const originalCalls = []
-  const dispatches = []
-  class FakeBridge {
-    async handleInbound(event) {
-      originalCalls.push(event)
+test('constructor-captured tryHandleCommand arrow still sees a later prototype patch', async () => {
+  class CapturingInboundPipeline {
+    constructor(ctx) {
+      this.ctx = ctx
     }
-    async dispatchFollowup(chatId, text, role, nickname) {
-      dispatches.push({ chatId, text, role, nickname })
+
+    async processInbound(inbound) {
+      await this.ctx.tryHandleCommand(inbound.chatId, inbound.text)
     }
   }
+
+  class FakeChatBridge {
+    constructor() {
+      this.inbound = new CapturingInboundPipeline({
+        tryHandleCommand: (...args) => this.tryHandleCommand(...args),
+      })
+    }
+
+    async handleInbound(event) {
+      await this.inbound.processInbound({
+        kind: 'group',
+        chatId: 'group:2002',
+        text: String(event.raw_message ?? ''),
+      })
+    }
+
+    async tryHandleCommand() {
+      return false
+    }
+  }
+
+  const bridge = new FakeChatBridge()
+  const original = FakeChatBridge.prototype.tryHandleCommand
+  let patchedCalls = 0
+  FakeChatBridge.prototype.tryHandleCommand = async () => {
+    patchedCalls += 1
+    return false
+  }
+  try {
+    await bridge.handleInbound({ raw_message: 'hello' })
+  } finally {
+    FakeChatBridge.prototype.tryHandleCommand = original
+  }
+
+  assert.equal(
+    patchedCalls,
+    1,
+    'the arrow captures the receiver, while the method is resolved when it is called',
+  )
+})
+
+test('wraps an already-constructed inbound pipeline and observes group messages', async () => {
+  function normalized(event) {
+    return {
+      kind: event.message_type ?? 'group',
+      userId: String(event.user_id ?? ''),
+      groupId: String(event.group_id ?? ''),
+      chatId: event.message_type === 'private'
+        ? `private:${String(event.user_id ?? '')}`
+        : `group:${String(event.group_id ?? '')}`,
+      segments: Array.isArray(event.message) ? event.message : undefined,
+      raw: String(event.raw_message ?? ''),
+      text: String(event.raw_message ?? ''),
+      messageId: event.message_id === undefined ? undefined : String(event.message_id),
+      nickname: event.sender?.nickname ?? String(event.user_id ?? ''),
+    }
+  }
+
+  class FakeInboundPipeline {
+    constructor(ctx) {
+      this.ctx = ctx
+      this.calls = []
+    }
+
+    async processInbound(inbound) {
+      this.calls.push(inbound)
+    }
+  }
+
+  class FakeChatBridge {
+    constructor(ctx) {
+      this.inbound = new FakeInboundPipeline(ctx)
+    }
+
+    async handleInbound(event) {
+      await this.inbound.processInbound(normalized(event))
+    }
+  }
+
+  const observed = []
+  const dispatches = []
+  const chats = new Map([
+    ['group:2002', {
+      sessionId: 'session-2002',
+      agent: { status: 'idle' },
+    }],
+  ])
+  const bridge = new FakeChatBridge({
+    selfId: () => '9999',
+    getChat: chatId => chats.get(chatId),
+    async dispatchFollowup(chatId, text, role, nickname) {
+      dispatches.push({ chatId, text, role, nickname })
+    },
+  })
   const gate = { observe: value => observed.push(value) }
   const adapter = installInboundAdapter({
-    Bridge: FakeBridge,
+    Pipeline: FakeInboundPipeline,
     gate,
     config: normalizeConfig(),
     now: () => 1_000,
   })
-  const bridge = new FakeBridge()
+
+  assert.equal(Object.hasOwn(bridge.inbound, 'processInbound'), false)
 
   await bridge.handleInbound({
     message_type: 'group',
@@ -373,7 +466,8 @@ test('channel adapter observes raw group messages before onebot gates mentions',
     raw_message: 'not mentioned',
     sender: { nickname: 'tester' },
   })
-  assert.equal(originalCalls.length, 0)
+  assert.equal(Object.hasOwn(bridge.inbound, 'processInbound'), true)
+  assert.equal(bridge.inbound.calls.length, 0)
   assert.equal(observed.length, 1)
   assert.equal(observed[0].mentioned, false)
 
@@ -390,6 +484,8 @@ test('channel adapter observes raw group messages before onebot gates mentions',
     role: 'member',
     nickname: 'tester',
   }])
+  assert.equal(adapter.chatForSession('session-2002'), 'group:2002')
+  assert.equal(adapter.isBusy('group:2002'), false)
 
   await bridge.handleInbound({
     message_type: 'group',
@@ -398,7 +494,7 @@ test('channel adapter observes raw group messages before onebot gates mentions',
     raw_message: '/help',
     sender: { nickname: 'tester' },
   })
-  assert.equal(originalCalls.length, 1)
+  assert.equal(bridge.inbound.calls.length, 1)
   assert.equal(observed.length, 1)
 
   await bridge.handleInbound({
@@ -406,8 +502,9 @@ test('channel adapter observes raw group messages before onebot gates mentions',
     user_id: 1001,
     raw_message: 'private',
   })
-  assert.equal(originalCalls.length, 2)
+  assert.equal(bridge.inbound.calls.length, 2)
   adapter.remove()
+  assert.equal(Object.hasOwn(bridge.inbound, 'processInbound'), false)
 })
 
 test('ordinary chatter after the observation window leaves presence', async (t) => {

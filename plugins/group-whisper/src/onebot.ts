@@ -25,27 +25,35 @@ interface RawOneBotEvent {
   }
 }
 
-interface BridgeChat {
+interface NormalizedInboundLike {
+  kind: 'private' | 'group'
+  userId: string
+  groupId: string
+  chatId: string
+  segments?: RawSegment[]
+  raw: string
+  text: string
+  messageId?: string
+  nickname: string
+}
+
+interface InboundChatLike {
+  sessionId?: string
   agent?: {
     status?: string
   }
 }
 
-interface ChatBridgeLike {
-  deps?: {
-    connection?: { selfId?: string }
-    policy?: {
-      groupPolicy?: string
-      groupAllowFrom?: readonly string[]
-    }
-    config?: {
-      ignoreSelf?: boolean
-    }
+interface InboundContextLike {
+  policy?: {
+    groupPolicy?: string
+    groupAllowFrom?: readonly string[]
   }
-  chats?: Map<string, BridgeChat>
-  bySession?: Map<string, string>
-  handleInbound(event: RawOneBotEvent, opts?: { injected?: boolean }): Promise<void>
-  ensureChat?(chatId: string, nickname: string): Promise<unknown>
+  config?: {
+    botQQ?: string
+  }
+  selfId?(): string
+  getChat?(chatId: string): InboundChatLike | undefined
   dispatchFollowup?(
     chatId: string,
     text: string,
@@ -54,17 +62,42 @@ interface ChatBridgeLike {
   ): Promise<void>
 }
 
+interface InboundPipelineLike {
+  ctx: InboundContextLike
+  processInbound(inbound: NormalizedInboundLike): Promise<void>
+}
+
+type ProcessInbound = (
+  this: InboundPipelineLike,
+  inbound: NormalizedInboundLike,
+) => Promise<void>
+
+type InboundPipelineConstructor = {
+  prototype: InboundPipelineLike & {
+    processInbound: ProcessInbound
+  }
+}
+
+interface ChatBridgeLike {
+  handleInbound(event: RawOneBotEvent, opts?: { injected?: boolean }): Promise<void>
+}
+
 type ChatBridgeConstructor = {
   prototype: ChatBridgeLike & {
     handleInbound(event: RawOneBotEvent, opts?: { injected?: boolean }): Promise<void>
   }
 }
 
+export interface LoadedOneBotInbound {
+  Pipeline: InboundPipelineConstructor
+  isInjected(): boolean
+}
+
 export interface InboundAdapter {
   chatForSession(sessionId: string): string | undefined
   dispatch(input: DispatchInput): Promise<void>
   isBusy(chatId: string): boolean
-  bridge(): ChatBridgeLike | undefined
+  pipeline(): InboundPipelineLike | undefined
   remove(): void
 }
 
@@ -92,7 +125,7 @@ function stripCq(raw: string): string {
 }
 
 function parseText(
-  event: RawOneBotEvent,
+  event: Pick<RawOneBotEvent, 'message' | 'raw_message'>,
   selfId: string,
 ): { text: string; mentioned: boolean } {
   let mentioned = false
@@ -138,8 +171,8 @@ function parseText(
   return { text, mentioned }
 }
 
-function groupAllowed(bridge: ChatBridgeLike, groupId: string): boolean {
-  const policy = bridge.deps?.policy
+function groupAllowed(ctx: InboundContextLike, groupId: string): boolean {
+  const policy = ctx.policy
   if (policy === undefined) return true
   if (policy.groupPolicy === 'disabled') return false
   if (
@@ -157,32 +190,30 @@ function isCommand(text: string): boolean {
 }
 
 function normalize(
-  bridge: ChatBridgeLike,
-  event: RawOneBotEvent,
+  pipeline: InboundPipelineLike,
+  inbound: NormalizedInboundLike,
   now: number,
 ): ObservedGroupMessage | undefined {
-  if (event.message_type !== 'group') return undefined
-  const groupId = String(event.group_id ?? '')
-  const userId = String(event.user_id ?? '')
+  if (inbound.kind !== 'group') return undefined
+  const groupId = inbound.groupId
+  const userId = inbound.userId
   if (groupId === '' || userId === '') return undefined
-  const selfId = String(event.self_id ?? bridge.deps?.connection?.selfId ?? '')
-  if (userId === selfId) return undefined
 
-  const parsed = parseText(event, selfId)
-  const nickname = sanitizeNickname(
-    event.sender?.card !== undefined && event.sender.card !== ''
-      ? event.sender.card
-      : event.sender?.nickname !== undefined && event.sender.nickname !== ''
-        ? event.sender.nickname
-        : userId,
-  )
+  const selfId = pipeline.ctx.selfId?.() ?? pipeline.ctx.config?.botQQ ?? ''
+  if (userId === selfId) return undefined
+  const parsed = parseText({
+    message: inbound.segments,
+    raw_message: inbound.raw,
+  }, selfId)
+
+  const nickname = sanitizeNickname(inbound.nickname)
   return {
     chatId: `group:${groupId}`,
     groupId,
     userId,
     nickname: nickname === '' ? userId : nickname,
     text: parsed.text,
-    messageId: event.message_id === undefined ? undefined : String(event.message_id),
+    messageId: inbound.messageId,
     mentioned: parsed.mentioned,
     at: now,
   }
@@ -199,74 +230,154 @@ export async function loadOneBotBridge(): Promise<ChatBridgeConstructor | undefi
   }
 }
 
+export async function loadOneBotInbound(): Promise<LoadedOneBotInbound | undefined> {
+  try {
+    const packageUrl = import.meta.resolve('dsh-onebot-qq/package.json')
+    const inboundUrl = new URL('lib/inbound.js', packageUrl).href
+    const injectUrl = new URL('lib/inject.js', packageUrl).href
+    const inboundModule = await import(inboundUrl) as {
+      InboundPipeline?: InboundPipelineConstructor
+    }
+    if (inboundModule.InboundPipeline === undefined) return undefined
+    let currentInjectRound: (() => unknown) | undefined
+    try {
+      const injectModule = await import(injectUrl) as {
+        currentInjectRound?: () => unknown
+      }
+      currentInjectRound = injectModule.currentInjectRound
+    } catch {
+      // Injection is a debug-only channel. Losing that marker must not disable
+      // the ordinary inbound hook.
+    }
+    return {
+      Pipeline: inboundModule.InboundPipeline,
+      isInjected: () => currentInjectRound?.() !== undefined,
+    }
+  } catch {
+    return undefined
+  }
+}
+
 export function installInboundAdapter(options: {
-  Bridge: ChatBridgeConstructor
+  Pipeline: InboundPipelineConstructor
   gate: WhisperGate
   config: GroupWhisperConfig
+  isInjected?(): boolean
   now?(): number
   log?(message: string): void
 }): InboundAdapter {
-  const { Bridge, gate, config } = options
+  const { Pipeline, gate, config } = options
   const now = options.now ?? Date.now
-  const prototype = Bridge.prototype
-  const original = prototype.handleInbound
-  let activeBridge: ChatBridgeLike | undefined
+  const prototype = Pipeline.prototype
+  const original = prototype.processInbound
+  const instanceWrappers = new Map<InboundPipelineLike, ProcessInbound>()
+  const knownChats = new Set<string>()
+  const pipelineByChat = new Map<string, InboundPipelineLike>()
+  const sessionToChat = new Map<string, string>()
+  let activePipeline: InboundPipelineLike | undefined
 
-  const wrappedHandleInbound = async function handleInbound(
-    this: ChatBridgeLike,
-    event: RawOneBotEvent,
-    opts?: { injected?: boolean },
-  ): Promise<void> {
-    activeBridge = this
-    if (opts?.injected === true) {
-      return original.call(this, event, opts)
+  const intercept: ProcessInbound = async function processInbound(inbound) {
+    activePipeline = this
+    if (options.isInjected?.() === true) {
+      return original.call(this, inbound)
     }
-    if (event.message_type !== 'group') {
-      return original.call(this, event, opts)
+    if (inbound.kind !== 'group') {
+      return original.call(this, inbound)
     }
-    const groupId = String(event.group_id ?? '')
+
+    const groupId = inbound.groupId
     if (
       groupId === '' ||
-      !groupAllowed(this, groupId) ||
+      !groupAllowed(this.ctx, groupId) ||
       (config.groups.length > 0 && !config.groups.includes(groupId))
     ) {
-      return original.call(this, event, opts)
+      return original.call(this, inbound)
     }
 
-    const message = normalize(this, event, now())
-    if (message === undefined) return original.call(this, event, opts)
+    const message = normalize(this, inbound, now())
+    if (message === undefined) return original.call(this, inbound)
     if (isCommand(message.text)) {
-      return original.call(this, event, opts)
+      return original.call(this, inbound)
     }
+
+    knownChats.add(message.chatId)
+    pipelineByChat.set(message.chatId, this)
     gate.observe(message)
   }
-  prototype.handleInbound = wrappedHandleInbound
+
+  // The bridge looks up processInbound on its live InboundPipeline instance for
+  // every event. This prototype function is only a discovery trampoline: on the
+  // first event it installs an own property on that already-constructed
+  // instance, so routing does not depend on constructor-time callback snapshots.
+  const discoverAndWrap: ProcessInbound = async function processInbound(inbound) {
+    const pipeline = this
+    let wrapped = instanceWrappers.get(pipeline)
+    if (wrapped === undefined) {
+      wrapped = async function installedProcessInbound(value) {
+        return intercept.call(this, value)
+      }
+      instanceWrappers.set(pipeline, wrapped)
+      Object.defineProperty(pipeline, 'processInbound', {
+        configurable: true,
+        enumerable: false,
+        value: wrapped,
+        writable: true,
+      })
+    }
+    return wrapped.call(pipeline, inbound)
+  }
+  prototype.processInbound = discoverAndWrap
+  options.log?.('[group-whisper] inbound hook mounted on InboundPipeline.processInbound')
+
+  const pipelineForChat = (chatId: string): InboundPipelineLike | undefined =>
+    pipelineByChat.get(chatId) ?? activePipeline
 
   return {
     chatForSession(sessionId: string): string | undefined {
-      return activeBridge?.bySession?.get(sessionId)
+      const mapped = sessionToChat.get(sessionId)
+      if (mapped !== undefined) return mapped
+      for (const chatId of knownChats) {
+        const pipeline = pipelineByChat.get(chatId)
+        if (pipeline?.ctx.getChat?.(chatId)?.sessionId === sessionId) {
+          sessionToChat.set(sessionId, chatId)
+          return chatId
+        }
+      }
+      return undefined
     },
     isBusy(chatId: string): boolean {
-      return activeBridge?.chats?.get(chatId)?.agent?.status === 'running'
+      return pipelineForChat(chatId)?.ctx.getChat?.(chatId)?.agent?.status === 'running'
     },
-    bridge(): ChatBridgeLike | undefined {
-      return activeBridge
+    pipeline(): InboundPipelineLike | undefined {
+      return activePipeline
     },
     async dispatch(input: DispatchInput): Promise<void> {
-      const bridge = activeBridge
-      if (bridge === undefined || bridge.dispatchFollowup === undefined) {
-        throw new Error('dsh-onebot bridge is unavailable')
+      const pipeline = pipelineForChat(input.chatId)
+      if (pipeline?.ctx.dispatchFollowup === undefined) {
+        throw new Error('dsh-onebot InboundPipeline is unavailable')
       }
-      await bridge.dispatchFollowup(
+      await pipeline.ctx.dispatchFollowup(
         input.chatId,
         input.prompt,
         'member',
         input.nickname,
       )
+      const sessionId = pipeline.ctx.getChat?.(input.chatId)?.sessionId
+      if (sessionId !== undefined) sessionToChat.set(sessionId, input.chatId)
     },
     remove(): void {
-      if (prototype.handleInbound === wrappedHandleInbound) {
-        prototype.handleInbound = original
+      for (const [pipeline, wrapped] of instanceWrappers) {
+        if (pipeline.processInbound === wrapped) {
+          delete (pipeline as Partial<InboundPipelineLike>).processInbound
+        }
+      }
+      instanceWrappers.clear()
+      knownChats.clear()
+      pipelineByChat.clear()
+      sessionToChat.clear()
+      activePipeline = undefined
+      if (prototype.processInbound === discoverAndWrap) {
+        prototype.processInbound = original
       }
     },
   }

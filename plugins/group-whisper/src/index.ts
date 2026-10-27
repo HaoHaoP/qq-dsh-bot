@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import { createModelDecider } from './analyzer.js'
 import { normalizeConfig } from './config.js'
 import { WhisperGate } from './gate.js'
-import { installInboundAdapter, loadOneBotBridge } from './onebot.js'
+import { installInboundAdapter, loadOneBotInbound } from './onebot.js'
 import { openStateStore } from './store.js'
 import type { GroupWhisperConfig, PluginContext } from './types.js'
 
@@ -51,10 +51,10 @@ export async function apply(
   if (!config.enabled) return
 
   const logger = ctx.logger ?? console
-  const Bridge = await loadOneBotBridge()
-  if (Bridge === undefined) {
+  const onebot = await loadOneBotInbound()
+  if (onebot === undefined) {
     logger.warn?.(
-      '[group-whisper] dsh-onebot-qq/lib/bridge.js is unavailable; group gate is inactive',
+      '[group-whisper] dsh-onebot-qq/lib/inbound.js is unavailable; group gate is inactive',
     )
     return
   }
@@ -77,9 +77,10 @@ export async function apply(
     log: message => logger.info?.(message),
   })
   adapter = installInboundAdapter({
-    Bridge,
+    Pipeline: onebot.Pipeline,
     gate,
     config,
+    isInjected: onebot.isInjected,
     log: message => logger.info?.(message),
   })
 
