@@ -1,0 +1,41 @@
+{
+  "name": "qq-meme-pick",
+  "version": "0.1.0",
+  "description": "Pick local meme files for QQ and return absolute paths for qq_send_image",
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "src",
+    "tests",
+    "cordis.patch.yml",
+    "README.md",
+    "tsconfig.json"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.13.0",
+    "dsh": ">=0.2.1-rc.2 <0.3.0-0"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "node --test tests/"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.9.0"
+  }
+}
